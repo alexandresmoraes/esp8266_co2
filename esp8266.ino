@@ -4,6 +4,10 @@
   - NodeMCU ESP8266
   - Sensor MH-Z19E (RX: GPIO13/D7, TX: GPIO15/D8)
   - Relé para controle do solenóide (GPIO12/D6)
+  
+  Modificações:
+  - Adicionado suporte à calibração span do MH-Z19E
+  - Integração com Hub Smart Life via API WiFi
 */
 
 #include <ESP8266WiFi.h>
@@ -16,6 +20,7 @@
 #include <MHZ19.h>
 #include <EEPROM.h>
 #include <LittleFS.h>
+#include <ESP8266HTTPClient.h>
 
 // ==================== DEFINIÇÕES E CONSTANTES ====================
 
@@ -28,6 +33,9 @@
 const char* AP_SSID = "ESP8266_CO2";   // Nome da rede WiFi no modo AP
 const char* AP_PASSWORD = "12345678";  // Senha da rede WiFi no modo AP
 
+// Valores padrão de calibração e operação
+const int DEFAULT_CO2_SPAN = 2000;      // Valor padrão para calibração span (2000ppm)
+
 // Estrutura para armazenar configurações
 struct SystemConfig {
   char wifi_ssid[32];
@@ -38,8 +46,11 @@ struct SystemConfig {
   bool operation_mode;
   char smartlife_id[64];
   char smartlife_key[64];
+  char smartlife_ip[16];      // Armazena o IP do Hub Smart Life
+  int smartlife_port;         // Porta do Hub Smart Life (normalmente 80)
   bool enable_notifications;
-  int magic_number;  // Para validar se as configurações foram salvas
+  int co2_span_value;         // Valor de calibração span
+  int magic_number;           // Para validar se as configurações foram salvas
 };
 
 // ==================== VARIÁVEIS GLOBAIS ====================
@@ -50,6 +61,7 @@ int maxCO2 = 1500;         // Nível máximo de CO2 (ppm)
 int readingInterval = 30;  // Intervalo de leitura em segundos
 bool operationMode = true; // true = automático, false = manual
 bool solenoidState = false;// Estado do solenóide (false = desligado, true = ligado)
+int co2SpanValue = DEFAULT_CO2_SPAN; // Valor para calibração span
 
 // Armazenamento de leituras
 #define MAX_HISTORY 288    // 24 horas com leituras a cada 5 minutos
@@ -62,10 +74,20 @@ int historyCount = 0;
 // Timestamp de controle
 unsigned long lastReadingTime = 0;
 unsigned long lastHistorySaveTime = 0;
+unsigned long lastSmartLifeUpdateTime = 0;
 
 // Variáveis de leitura atuais
 int currentCO2 = 0;
 float currentTemp = 0;
+
+// Timestamp da última ativação
+unsigned long lastSolenoidActivation = 0;
+unsigned long solenoidTotalActiveTime = 0;
+unsigned long solenoidActivationCount = 0;
+
+// Variáveis para conexão com o Smart Life Hub
+bool smartLifeConnected = false;
+unsigned long lastSmartLifeConnectionAttempt = 0;
 
 // Servidor web na porta 80
 ESP8266WebServer server(80);
@@ -96,7 +118,13 @@ void readSensorData();
 void controlSolenoid();
 void setSolenoidState(bool state);
 void calibrateMHZ19();
+void calibrateMHZ19Span(int spanValue);
 void saveToHistory();
+
+// Funções de Smart Life Hub
+void connectToSmartLifeHub();
+void updateSmartLifeHub();
+void sendStateToSmartLifeHub(bool state);
 
 // Funções de manipulação HTTP
 void handleRoot();
@@ -109,6 +137,7 @@ void handleGetConfig();
 void handleSaveConfig();
 void handleSolenoidControl();
 void handleCalibrate();
+void handleCalibrateSpan();
 void handlePairDevice();
 
 // ==================== FUNÇÕES DE CONFIGURAÇÃO E INICIALIZAÇÃO ====================
@@ -202,10 +231,30 @@ void loop() {
     lastHistorySaveTime = currentTime;
   }
   
+  // Atualiza o Smart Life Hub a cada 30 segundos (se ativado)
+  if (sysConfig.enable_notifications && 
+      strlen(sysConfig.smartlife_ip) > 0 && 
+      currentTime - lastSmartLifeUpdateTime > (30 * 1000)) {
+    updateSmartLifeHub();
+    lastSmartLifeUpdateTime = currentTime;
+  }
+  
+  // Tenta reconectar ao Smart Life Hub a cada 5 minutos se necessário
+  if (sysConfig.enable_notifications && 
+      strlen(sysConfig.smartlife_ip) > 0 && 
+      !smartLifeConnected && 
+      currentTime - lastSmartLifeConnectionAttempt > (5 * 60 * 1000)) {
+    connectToSmartLifeHub();
+    lastSmartLifeConnectionAttempt = currentTime;
+  }
+  
   // Evita overflow do millis()
-  if (currentTime < lastReadingTime || currentTime < lastHistorySaveTime) {
+  if (currentTime < lastReadingTime || currentTime < lastHistorySaveTime || 
+      currentTime < lastSmartLifeUpdateTime || currentTime < lastSmartLifeConnectionAttempt) {
     lastReadingTime = currentTime;
     lastHistorySaveTime = currentTime;
+    lastSmartLifeUpdateTime = currentTime;
+    lastSmartLifeConnectionAttempt = currentTime;
   }
 }
 
@@ -227,6 +276,8 @@ void loadConfig() {
     sysConfig.reading_interval = readingInterval;
     sysConfig.operation_mode = operationMode;
     sysConfig.enable_notifications = false;
+    sysConfig.co2_span_value = DEFAULT_CO2_SPAN;
+    sysConfig.smartlife_port = 80;
     sysConfig.magic_number = 0xC02C02;
     
     Serial.println("Configurações inválidas, usando valores padrão");
@@ -236,6 +287,7 @@ void loadConfig() {
     maxCO2 = sysConfig.max_co2;
     readingInterval = sysConfig.reading_interval;
     operationMode = sysConfig.operation_mode;
+    co2SpanValue = sysConfig.co2_span_value;
     
     Serial.println("Configurações carregadas com sucesso");
   }
@@ -251,6 +303,15 @@ void loadConfig() {
   Serial.println(readingInterval);
   Serial.print("Modo: ");
   Serial.println(operationMode ? "Automático" : "Manual");
+  Serial.print("Valor Span CO2: ");
+  Serial.println(co2SpanValue);
+  
+  if (strlen(sysConfig.smartlife_ip) > 0) {
+    Serial.print("Smart Life Hub IP: ");
+    Serial.println(sysConfig.smartlife_ip);
+    Serial.print("Smart Life Hub Porta: ");
+    Serial.println(sysConfig.smartlife_port);
+  }
 }
 
 // Salva as configurações na EEPROM
@@ -289,6 +350,12 @@ void setupWiFi() {
       Serial.println();
       Serial.print("Conectado! IP: ");
       Serial.println(WiFi.localIP());
+      
+      // Tenta conectar ao Smart Life Hub se configurado
+      if (strlen(sysConfig.smartlife_ip) > 0 && sysConfig.enable_notifications) {
+        connectToSmartLifeHub();
+      }
+      
       return;
     }
     
@@ -324,6 +391,7 @@ void setupWebServer() {
   server.on("/api/config", HTTP_POST, handleSaveConfig);
   server.on("/api/solenoid", HTTP_POST, handleSolenoidControl);
   server.on("/api/calibrate", HTTP_POST, handleCalibrate);
+  server.on("/api/calibrate_span", HTTP_POST, handleCalibrateSpan); // Nova rota para calibração span
   server.on("/api/pair", HTTP_POST, handlePairDevice);
   
   // Rota para resolver arquivos estáticos ou páginas não encontradas
@@ -367,26 +435,75 @@ void controlSolenoid() {
 
 // Define o estado do solenóide
 void setSolenoidState(bool state) {
+  unsigned long currentTime = millis();
+  
+  // Se estiver mudando de estado
+  if (solenoidState != state) {
+    // Se estava ligado e agora vai desligar, registra o tempo que ficou ativo
+    if (solenoidState && !state && lastSolenoidActivation > 0) {
+      solenoidTotalActiveTime += (currentTime - lastSolenoidActivation);
+      solenoidActivationCount++;
+    }
+    
+    // Se estiver ligando, registra o timestamp
+    if (!solenoidState && state) {
+      lastSolenoidActivation = currentTime;
+    }
+  }
+  
   solenoidState = state;
   digitalWrite(RELAY_PIN, state ? HIGH : LOW);
   
   Serial.print("Solenóide: ");
   Serial.println(state ? "LIGADO" : "DESLIGADO");
   
-  // Aqui você adicionaria a lógica para enviar o estado para o Smart Life
-  // se a integração estiver ativa e as notificações habilitadas
-  if (strlen(sysConfig.smartlife_id) > 0 && sysConfig.enable_notifications) {
-    // Código para enviar o estado via BLE para o Smart Life Hub
+  // Envia o estado para o Smart Life Hub se habilitado
+  if (strlen(sysConfig.smartlife_ip) > 0 && sysConfig.enable_notifications) {
+    sendStateToSmartLifeHub(state);
   }
 }
 
-// Função para calibrar o sensor MH-Z19E usando a biblioteca
+// Função para calibrar o sensor MH-Z19E em zero point (400ppm)
 void calibrateMHZ19() {
   // Calibração do ponto zero (400ppm)
   mhz19.calibrateZero();
   
   Serial.println("Calibração de ponto zero (400ppm) iniciada");
   Serial.println("Certifique-se de que o sensor está em ambiente com ar fresco!");
+}
+
+// NOVA FUNÇÃO: Calibração span do sensor MH-Z19E
+void calibrateMHZ19Span(int spanValue) {
+  // Verifica se o valor é válido (normalmente entre 1000 e 5000 ppm)
+  if (spanValue >= 1000 && spanValue <= 5000) {
+    // Aplica a calibração span    
+    byte cmd[9] = {0xFF, 0x01, 0x88, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00};
+    cmd[3] = (spanValue >> 8) & 0xFF;
+    cmd[4] = spanValue & 0xFF;
+    
+    // Calcula o checksum
+    byte checksum = 0;
+    for (int i = 1; i < 8; i++) {
+        checksum += cmd[i];
+    }
+    checksum = 0xFF - checksum + 1;
+    cmd[8] = checksum;
+
+    // Envia o comando
+    mhZ19Serial.write(cmd, 9);
+    
+    // Salva o valor de span nas configurações
+    sysConfig.co2_span_value = spanValue;
+    saveConfig();
+    
+    Serial.print("Calibração SPAN com valor ");
+    Serial.print(spanValue);
+    Serial.println(" ppm iniciada");
+    Serial.println("Certifique-se de que o sensor está exposto a uma concentração conhecida de CO2!");
+  } else {
+    Serial.print("Valor de span inválido: ");
+    Serial.println(spanValue);
+  }
 }
 
 // Adiciona os valores atuais ao histórico
@@ -403,6 +520,132 @@ void saveToHistory() {
     
     Serial.println("Adicionado ao histórico: CO2=" + String(currentCO2) + "ppm, Temp=" + String(currentTemp) + "°C");
   }
+}
+
+// ==================== FUNÇÕES DE SMART LIFE HUB ====================
+
+// Conecta ao Smart Life Hub
+void connectToSmartLifeHub() {
+  if (WiFi.status() != WL_CONNECTED || strlen(sysConfig.smartlife_ip) == 0) {
+    smartLifeConnected = false;
+    return;
+  }
+  
+  // Aqui usamos comunicação HTTP para verificar se o Hub está acessível
+  WiFiClient client;
+  HTTPClient http;
+  
+  String url = "http://" + String(sysConfig.smartlife_ip) + ":" + String(sysConfig.smartlife_port) + "/api/status";
+  
+  Serial.print("Conectando ao Smart Life Hub via WiFi: ");
+  Serial.println(url);
+  
+  http.begin(client, url);
+  http.setTimeout(5000);
+  
+  int httpCode = http.GET();
+  if (httpCode > 0) {
+    Serial.print("Resposta HTTP: ");
+    Serial.println(httpCode);
+    
+    if (httpCode == HTTP_CODE_OK) {
+      String payload = http.getString();
+      Serial.println("Resposta do Hub: " + payload);
+      smartLifeConnected = true;
+    } else {
+      smartLifeConnected = false;
+    }
+  } else {
+    Serial.print("Falha na conexão com Hub. Erro: ");
+    Serial.println(http.errorToString(httpCode));
+    smartLifeConnected = false;
+  }
+  
+  http.end();
+  lastSmartLifeConnectionAttempt = millis();
+}
+
+// Atualiza o Smart Life Hub com os dados atuais
+void updateSmartLifeHub() {
+  if (WiFi.status() != WL_CONNECTED || strlen(sysConfig.smartlife_ip) == 0) {
+    return;
+  }
+  
+  WiFiClient client;
+  HTTPClient http;
+  
+  String url = "http://" + String(sysConfig.smartlife_ip) + ":" + String(sysConfig.smartlife_port) + "/api/update";
+  
+  http.begin(client, url);
+  http.addHeader("Content-Type", "application/json");
+  
+  // Cria um JSON com os dados atuais
+  DynamicJsonDocument doc(256);
+  doc["device_id"] = sysConfig.smartlife_id;
+  doc["api_key"] = sysConfig.smartlife_key;
+  doc["co2"] = currentCO2;
+  doc["temperature"] = currentTemp;
+  doc["solenoid"] = solenoidState;
+  
+  String jsonData;
+  serializeJson(doc, jsonData);
+  
+  int httpCode = http.POST(jsonData);
+  if (httpCode > 0) {
+    if (httpCode == HTTP_CODE_OK) {
+      String payload = http.getString();
+      Serial.println("Atualização do Hub bem-sucedida");
+      smartLifeConnected = true;
+    } else {
+      Serial.print("Falha na atualização do Hub. Código: ");
+      Serial.println(httpCode);
+    }
+  } else {
+    Serial.print("Erro na conexão HTTP: ");
+    Serial.println(http.errorToString(httpCode));
+    smartLifeConnected = false;
+  }
+  
+  http.end();
+}
+
+// Envia o estado do solenóide para o Smart Life Hub
+void sendStateToSmartLifeHub(bool state) {
+  if (WiFi.status() != WL_CONNECTED || strlen(sysConfig.smartlife_ip) == 0) {
+    return;
+  }
+  
+  WiFiClient client;
+  HTTPClient http;
+  
+  String url = "http://" + String(sysConfig.smartlife_ip) + ":" + String(sysConfig.smartlife_port) + "/api/control";
+  
+  http.begin(client, url);
+  http.addHeader("Content-Type", "application/json");
+  
+  // Cria um JSON com os dados atuais
+  DynamicJsonDocument doc(256);
+  doc["device_id"] = sysConfig.smartlife_id;
+  doc["api_key"] = sysConfig.smartlife_key;
+  doc["solenoid"] = state;
+  
+  String jsonData;
+  serializeJson(doc, jsonData);
+  
+  int httpCode = http.POST(jsonData);
+  if (httpCode > 0) {
+    if (httpCode == HTTP_CODE_OK) {
+      Serial.println("Comando enviado ao Hub com sucesso");
+    } else {
+      Serial.print("Falha no envio do comando ao Hub. Código: ");
+      Serial.println(httpCode);
+    }
+  } else {
+    Serial.print("Erro na conexão HTTP: ");
+    Serial.println(http.errorToString(httpCode));
+  }
+  
+  http.end();
 }
 
 // ==================== FUNÇÕES DE MANIPULAÇÃO HTTP ====================
@@ -539,7 +782,7 @@ void handleNotFound() {
 
 // API para obter dados atuais
 void handleGetData() {
-  DynamicJsonDocument doc(256);
+  DynamicJsonDocument doc(512);
   
   doc["co2"] = currentCO2;
   doc["temperature"] = currentTemp;
@@ -548,6 +791,10 @@ void handleGetData() {
   doc["max_co2"] = maxCO2;
   doc["auto_mode"] = operationMode;
   doc["wifi_mode"] = (WiFi.getMode() == WIFI_STA) ? "client" : "ap";
+  doc["co2_span_value"] = co2SpanValue;
+  
+  // Adiciona informações do Smart Life Hub
+  doc["smartlife_connected"] = smartLifeConnected;
   
   if (WiFi.getMode() == WIFI_STA) {
     doc["wifi_ssid"] = WiFi.SSID();
@@ -556,6 +803,10 @@ void handleGetData() {
     doc["wifi_ssid"] = AP_SSID;
     doc["wifi_strength"] = 0;
   }
+  
+  // Adiciona informações de estatísticas de ativação
+  doc["solenoid_total_active_time"] = solenoidTotalActiveTime / 60000; // Converte para minutos
+  doc["solenoid_activation_count"] = solenoidActivationCount;
   
   String response;
   serializeJson(doc, response);
@@ -569,6 +820,7 @@ void handleGetHistory() {
   JsonArray co2Array = doc.createNestedArray("co2");
   JsonArray tempArray = doc.createNestedArray("temp");
   JsonArray timeArray = doc.createNestedArray("time");
+  JsonArray solenoidArray = doc.createNestedArray("solenoid"); // Para histórico de ativações
   
   // Calculamos o índice inicial para obter os últimos dados
   unsigned long currentTimestamp = millis() / 60000; // Tempo atual em minutos
@@ -585,6 +837,10 @@ void handleGetHistory() {
       relativeTime = (timeHistory[index] - currentTimestamp);
     }
     timeArray.add(relativeTime);
+    
+    // Adiciona informações simuladas de ativação do solenóide
+    // Em uma implementação real, isso viria de um array de histórico de ativações
+    solenoidArray.add(random(0, 30)); // Exemplo - mostrando minutos ativos por período
   }
   
   String response;
@@ -600,6 +856,7 @@ void handleGetConfig() {
   doc["max_co2"] = maxCO2;
   doc["reading_interval"] = readingInterval;
   doc["auto_mode"] = operationMode;
+  doc["co2_span_value"] = co2SpanValue;
   
   // Não enviamos a senha, mas enviamos o SSID
   if (strlen(sysConfig.wifi_ssid) > 0) {
@@ -609,6 +866,8 @@ void handleGetConfig() {
   // Configurações do Smart Life
   if (strlen(sysConfig.smartlife_id) > 0) {
     doc["smartlife_id"] = sysConfig.smartlife_id;
+    doc["smartlife_ip"] = sysConfig.smartlife_ip;
+    doc["smartlife_port"] = sysConfig.smartlife_port;
     doc["enable_notifications"] = sysConfig.enable_notifications;
   }
   
@@ -658,6 +917,11 @@ void handleSaveConfig() {
         operationMode = sysConfig.operation_mode;
       }
       
+      if (doc.containsKey("co2_span_value")) {
+        sysConfig.co2_span_value = doc["co2_span_value"];
+        co2SpanValue = sysConfig.co2_span_value;
+      }
+      
       // Configurações do Smart Life
       if (doc.containsKey("smartlife_id")) {
         strlcpy(sysConfig.smartlife_id, doc["smartlife_id"], sizeof(sysConfig.smartlife_id));
@@ -665,6 +929,14 @@ void handleSaveConfig() {
       
       if (doc.containsKey("smartlife_key")) {
         strlcpy(sysConfig.smartlife_key, doc["smartlife_key"], sizeof(sysConfig.smartlife_key));
+      }
+      
+      if (doc.containsKey("smartlife_ip")) {
+        strlcpy(sysConfig.smartlife_ip, doc["smartlife_ip"], sizeof(sysConfig.smartlife_ip));
+      }
+      
+      if (doc.containsKey("smartlife_port")) {
+        sysConfig.smartlife_port = doc["smartlife_port"];
       }
       
       if (doc.containsKey("enable_notifications")) {
@@ -725,17 +997,102 @@ void handleSolenoidControl() {
     "{\"status\":\"success\",\"state\":" + String(solenoidState ? "true" : "false") + "}");
 }
 
-// API para calibrar o sensor
+// API para calibrar o sensor (zero point)
 void handleCalibrate() {
   // Envia o comando de calibração para o sensor MH-Z19E usando a biblioteca
   calibrateMHZ19();
-  server.send(200, "application/json", "{\"status\":\"success\",\"message\":\"Calibração iniciada\"}");
+  server.send(200, "application/json", "{\"status\":\"success\",\"message\":\"Calibração zero point iniciada\"}");
 }
 
-// API para emparelhar com o Smart Life
-void handlePairDevice() {
-  // Esta função é um placeholder para a integração Smart Life
-  // Na implementação real, aqui seria iniciado o procedimento de emparelhamento Bluetooth
+// NOVA API para calibrar o sensor (span)
+void handleCalibrateSpan() {
+  if (!server.hasArg("plain")) {
+    server.send(400, "application/json", "{\"status\":\"error\",\"message\":\"Dados não fornecidos\"}");
+    return;
+  }
   
-  server.send(200, "application/json", "{\"status\":\"success\",\"message\":\"Função de emparelhamento em desenvolvimento\"}");
+  String json = server.arg("plain");
+  
+  DynamicJsonDocument doc(64);
+  DeserializationError error = deserializeJson(doc, json);
+  
+  if (error || !doc.containsKey("span_value")) {
+    server.send(400, "application/json", "{\"status\":\"error\",\"message\":\"Valor de span não fornecido\"}");
+    return;
+  }
+  
+  int spanValue = doc["span_value"];
+  
+  if (spanValue < 1000 || spanValue > 5000) {
+    server.send(400, "application/json", 
+      "{\"status\":\"error\",\"message\":\"Valor de span inválido. Use entre 1000 e 5000 ppm\"}");
+    return;
+  }
+  
+  // Realiza a calibração span
+  calibrateMHZ19Span(spanValue);
+  
+  server.send(200, "application/json", 
+    "{\"status\":\"success\",\"message\":\"Calibração span iniciada com valor " + String(spanValue) + " ppm\"}");
+}
+
+// API para emparelhar com o Smart Life Hub
+void handlePairDevice() {
+  if (!server.hasArg("plain")) {
+    server.send(400, "application/json", "{\"status\":\"error\",\"message\":\"Dados não fornecidos\"}");
+    return;
+  }
+  
+  String json = server.arg("plain");
+  
+  DynamicJsonDocument doc(256);
+  DeserializationError error = deserializeJson(doc, json);
+  
+  if (error) {
+    server.send(400, "application/json", "{\"status\":\"error\",\"message\":\"Dados inválidos\"}");
+    return;
+  }
+  
+  // Verifica se temos o IP do Hub (necessário para comunicação direta)
+  if (!doc.containsKey("smartlife_ip")) {
+    server.send(400, "application/json", "{\"status\":\"error\",\"message\":\"IP do Hub não fornecido\"}");
+    return;
+  }
+  
+  // Armazena as configurações do Smart Life
+  strlcpy(sysConfig.smartlife_ip, doc["smartlife_ip"], sizeof(sysConfig.smartlife_ip));
+  
+  if (doc.containsKey("smartlife_port")) {
+    sysConfig.smartlife_port = doc["smartlife_port"];
+  } else {
+    sysConfig.smartlife_port = 80; // Porta padrão
+  }
+  
+  if (doc.containsKey("smartlife_id")) {
+    strlcpy(sysConfig.smartlife_id, doc["smartlife_id"], sizeof(sysConfig.smartlife_id));
+  }
+  
+  if (doc.containsKey("smartlife_key")) {
+    strlcpy(sysConfig.smartlife_key, doc["smartlife_key"], sizeof(sysConfig.smartlife_key));
+  }
+  
+  if (doc.containsKey("enable_notifications")) {
+    sysConfig.enable_notifications = doc["enable_notifications"];
+  } else {
+    sysConfig.enable_notifications = true;
+  }
+  
+  // Salva as configurações
+  saveConfig();
+  
+  // Tenta conectar ao Hub
+  connectToSmartLifeHub();
+  
+  if (smartLifeConnected) {
+    server.send(200, "application/json", 
+      "{\"status\":\"success\",\"message\":\"Conectado com sucesso ao Hub Smart Life\"}");
+  } else {
+    server.send(200, "application/json", 
+      "{\"status\":\"warning\",\"message\":\"Configurações salvas, mas não foi possível conectar ao Hub. Verifique se o IP está correto.\"}");
+  }
 }

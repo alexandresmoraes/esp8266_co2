@@ -6,6 +6,8 @@ let solenoidActive = false;
 let minCO2 = 800;
 let maxCO2 = 1500;
 let autoMode = true;
+let co2SpanValue = 2000;
+let smartLifeConnected = false;
 
 // Histórico de leituras
 const co2History = [];
@@ -189,6 +191,26 @@ function setupEventListeners() {
     }
     
     // Configuração dos sliders
+    setupSliders();
+    
+    // Toggle do campo PIN baseado na seleção do modo de emparelhamento
+    setupSmartLifeEvents();
+    
+    // Configuração dos botões de calibração
+    setupCalibrationEvents();
+    
+    // Salvar configurações
+    const saveConfig = document.getElementById('save-config');
+    if (saveConfig) {
+        saveConfig.addEventListener('click', () => {
+            saveConfigData();
+        });
+    }
+}
+
+// Configuração dos sliders
+function setupSliders() {
+    // Sliders de CO2 min/max
     const minCO2Slider = document.getElementById('min-co2-slider');
     const minCO2Input = document.getElementById('min-co2');
     const maxCO2Slider = document.getElementById('max-co2-slider');
@@ -214,32 +236,40 @@ function setupEventListeners() {
         });
     }
     
-    // Toggle do campo PIN baseado na seleção do modo de emparelhamento
-    const bluetoothPairing = document.getElementById('bluetooth-pairing');
-    if (bluetoothPairing) {
-        bluetoothPairing.addEventListener('change', function() {
-            const pinGroup = document.getElementById('pin-group');
-            if (pinGroup) {
-                if (this.value === 'pin') {
-                    pinGroup.style.display = 'block';
-                } else {
-                    pinGroup.style.display = 'none';
-                }
-            }
+    // Slider para calibração span
+    const spanValueSlider = document.getElementById('span-value-slider');
+    const spanValueInput = document.getElementById('span-value');
+    
+    if (spanValueSlider && spanValueInput) {
+        spanValueSlider.addEventListener('input', () => {
+            spanValueInput.value = spanValueSlider.value;
+        });
+        
+        spanValueInput.addEventListener('input', () => {
+            spanValueSlider.value = spanValueInput.value;
         });
     }
-    
-    // Emparelhar com o dispositivo Smart Life Hub
+}
+
+// Configuração dos eventos da integração Smart Life
+function setupSmartLifeEvents() {
+    // Testar conexão com o Hub
     const pairDevice = document.getElementById('pair-device');
     if (pairDevice) {
         pairDevice.addEventListener('click', () => {
-            const integration = document.getElementById('smart-integration');
-            if (integration && integration.value === 'none') {
-                showToast('Selecione primeiro o tipo de integração Smart Life');
+            // Obtém os dados dos campos
+            const smartLifeIP = document.getElementById('smartlife-ip')?.value || '';
+            const smartLifePort = parseInt(document.getElementById('smartlife-port')?.value || '80');
+            const smartLifeId = document.getElementById('smartlife-id')?.value || '';
+            const smartLifeKey = document.getElementById('smartlife-key')?.value || '';
+            const enableNotifications = document.getElementById('enable-notifications')?.checked || false;
+            
+            if (!smartLifeIP) {
+                showToast('Insira o IP do Hub Smart Life');
                 return;
             }
             
-            showToast('Iniciando processo de emparelhamento com o Hub Smart Life...');
+            showToast('Testando conexão com o Hub Smart Life...');
             
             fetch('/api/pair', {
                 method: 'POST',
@@ -247,17 +277,20 @@ function setupEventListeners() {
                     'Content-Type': 'application/json'
                 },
                 body: JSON.stringify({
-                    smartlife_id: document.getElementById('smartlife-id')?.value || '',
-                    pairing_mode: document.getElementById('bluetooth-pairing')?.value || 'auto',
-                    pairing_pin: document.getElementById('pairing-pin')?.value || ''
+                    smartlife_ip: smartLifeIP,
+                    smartlife_port: smartLifePort,
+                    smartlife_id: smartLifeId,
+                    smartlife_key: smartLifeKey,
+                    enable_notifications: enableNotifications
                 })
             })
             .then(response => response.json())
             .then(data => {
                 if (data.status === 'success') {
-                    showToast('Dispositivo emparelhado com sucesso!');
+                    showToast('Conexão com o Hub estabelecida com sucesso!');
+                    fetchData(); // Atualiza dados para mostrar status de conexão
                 } else {
-                    showToast('Erro ao emparelhar: ' + data.message);
+                    showToast('Aviso: ' + data.message);
                 }
             })
             .catch(error => {
@@ -265,21 +298,33 @@ function setupEventListeners() {
             });
         });
     }
-    
-    // Salvar configurações
-    const saveConfig = document.getElementById('save-config');
-    if (saveConfig) {
-        saveConfig.addEventListener('click', () => {
-            saveConfigData();
+}
+
+// Configuração dos eventos de calibração
+function setupCalibrationEvents() {
+    // Calibração zero point
+    const calibrateZeroBtn = document.getElementById('calibrate-zero');
+    if (calibrateZeroBtn) {
+        calibrateZeroBtn.addEventListener('click', () => {
+            if (confirm('Deseja calibrar o sensor para 400 ppm (ar fresco)? Certifique-se de que o sensor está em um ambiente com ar fresco.')) {
+                calibrateZeroPoint();
+            }
         });
     }
     
-    // Calibrar sensor
-    const calibrateSensorBtn = document.getElementById('calibrate-sensor');
-    if (calibrateSensorBtn) {
-        calibrateSensorBtn.addEventListener('click', () => {
-            if (confirm('Deseja calibrar o sensor MH-Z19E? Certifique-se de que o sensor está em ambiente com ar fresco.')) {
-                calibrateSensor();
+    // Calibração span
+    const calibrateSpanBtn = document.getElementById('calibrate-span');
+    if (calibrateSpanBtn) {
+        calibrateSpanBtn.addEventListener('click', () => {
+            const spanValue = parseInt(document.getElementById('span-value')?.value || '2000');
+            
+            if (spanValue < 1000 || spanValue > 5000) {
+                showToast('Valor de SPAN inválido! Use entre 1000 e 5000 ppm.');
+                return;
+            }
+            
+            if (confirm(`Deseja calibrar o sensor para ${spanValue} ppm? Certifique-se de que o sensor está exposto a uma concentração conhecida de CO2.`)) {
+                calibrateSpanPoint(spanValue);
             }
         });
     }
@@ -337,6 +382,8 @@ function updateUI(data) {
         minCO2 = data.min_co2 || 800;
         maxCO2 = data.max_co2 || 1500;
         autoMode = !!data.auto_mode;
+        co2SpanValue = data.co2_span_value || 2000;
+        smartLifeConnected = !!data.smartlife_connected;
         
         // Atualiza exibição dos valores
         const co2ValueElement = document.getElementById('co2-value');
@@ -344,6 +391,19 @@ function updateUI(data) {
         
         const tempValueElement = document.getElementById('temp-value');
         if (tempValueElement) tempValueElement.textContent = tempValue.toFixed(1);
+        
+        // Atualiza valores na aba de calibração
+        document.querySelectorAll('#current-co2').forEach(el => {
+            el.textContent = co2Value;
+        });
+        
+        document.querySelectorAll('#current-temp').forEach(el => {
+            el.textContent = tempValue.toFixed(1);
+        });
+        
+        document.querySelectorAll('#current-span').forEach(el => {
+            el.textContent = co2SpanValue;
+        });
         
         // Atualiza gauge de CO2
         const co2Gauge = document.getElementById('co2-gauge');
@@ -387,6 +447,9 @@ function updateUI(data) {
         // Atualiza status do solenóide
         updateSolenoidUI();
         
+        // Atualiza status Smart Life
+        updateSmartLifeUI();
+        
         // Atualiza o status do modo
         const toggleSolenoidBtn = document.getElementById('toggle-solenoid');
         if (toggleSolenoidBtn) {
@@ -417,6 +480,26 @@ function updateUI(data) {
         updateCharts();
     } catch (error) {
         console.error('Erro ao atualizar UI:', error);
+    }
+}
+
+// Atualiza a interface Smart Life
+function updateSmartLifeUI() {
+    const smartLifeStatus = document.getElementById('smartlife-status');
+    const smartLifeDetails = document.getElementById('smartlife-details');
+    
+    if (smartLifeStatus && smartLifeDetails) {
+        if (smartLifeConnected) {
+            smartLifeStatus.className = 'status-indicator status-on';
+            const statusText = smartLifeStatus.querySelector('.status-text');
+            if (statusText) statusText.textContent = 'CONECTADO';
+            smartLifeDetails.textContent = 'Hub Smart Life conectado e pronto para receber comandos.';
+        } else {
+            smartLifeStatus.className = 'status-indicator status-off';
+            const statusText = smartLifeStatus.querySelector('.status-text');
+            if (statusText) statusText.textContent = 'DESCONECTADO';
+            smartLifeDetails.textContent = 'Hub Smart Life não está conectado. Verifique as configurações.';
+        }
     }
 }
 
@@ -476,19 +559,32 @@ function updateHistory(data) {
             console.error("Erro ao atualizar o gráfico de histórico de CO2:", error);
         }
         
-        // Gera dados para o gráfico de ativações do solenóide (exemplo)
-        // Na implementação real, esses dados viriam do servidor
-        const solenoidData = Array(12).fill().map(() => Math.floor(Math.random() * 30));
-        const solenoidLabels = Array(12).fill().map((_, i) => `${11 - i}h`);
-        
-        try {
-            Plotly.update('solenoid-history-chart', {
-                x: [solenoidLabels],
-                y: [solenoidData]
-            });
-            console.log("Gráfico de histórico do solenóide atualizado");
-        } catch (error) {
-            console.error("Erro ao atualizar o gráfico de histórico do solenóide:", error);
+        // Atualiza o gráfico de ativações do solenóide se houver dados
+        if (data.solenoid && data.solenoid.length > 0) {
+            // Usar dados reais de ativação do solenóide
+            try {
+                Plotly.update('solenoid-history-chart', {
+                    x: [historyTimeLabels.slice(0, data.solenoid.length)],
+                    y: [data.solenoid]
+                });
+                console.log("Gráfico de histórico do solenóide atualizado");
+            } catch (error) {
+                console.error("Erro ao atualizar o gráfico de histórico do solenóide:", error);
+            }
+        } else {
+            // Gera dados para o gráfico de ativações do solenóide (exemplo)
+            const solenoidData = Array(12).fill().map(() => Math.floor(Math.random() * 30));
+            const solenoidLabels = Array(12).fill().map((_, i) => `${11 - i}h`);
+            
+            try {
+                Plotly.update('solenoid-history-chart', {
+                    x: [solenoidLabels],
+                    y: [solenoidData]
+                });
+                console.log("Gráfico de histórico do solenóide atualizado (dados simulados)");
+            } catch (error) {
+                console.error("Erro ao atualizar o gráfico de histórico do solenóide:", error);
+            }
         }
     } catch (error) {
         console.error("Erro em updateHistory:", error);
@@ -530,16 +626,28 @@ function loadConfig() {
             const operationMode = document.getElementById('operation-mode');
             if (operationMode) operationMode.value = data.auto_mode.toString();
             
+            // Valor de span para calibração
+            const spanValue = document.getElementById('span-value');
+            const spanValueSlider = document.getElementById('span-value-slider');
+            if (spanValue && data.co2_span_value) {
+                spanValue.value = data.co2_span_value;
+            }
+            if (spanValueSlider && data.co2_span_value) {
+                spanValueSlider.value = data.co2_span_value;
+            }
+            
             // Configurações Smart Life
-            if (data.smartlife_id) {
-                const smartIntegration = document.getElementById('smart-integration');
+            if (data.smartlife_id || data.smartlife_ip) {
                 const smartLifeId = document.getElementById('smartlife-id');
                 const smartLifeKey = document.getElementById('smartlife-key');
+                const smartLifeIp = document.getElementById('smartlife-ip');
+                const smartLifePort = document.getElementById('smartlife-port');
                 const enableNotifications = document.getElementById('enable-notifications');
                 
-                if (smartIntegration) smartIntegration.value = 'smartlife';
-                if (smartLifeId) smartLifeId.value = data.smartlife_id;
-                if (smartLifeKey) smartLifeKey.value = data.smartlife_key || '';
+                if (smartLifeId) smartLifeId.value = data.smartlife_id || '';
+                if (smartLifeKey) smartLifeKey.value = ''; // Não exibe a chave por segurança
+                if (smartLifeIp) smartLifeIp.value = data.smartlife_ip || '';
+                if (smartLifePort) smartLifePort.value = data.smartlife_port || 80;
                 if (enableNotifications) enableNotifications.checked = data.enable_notifications;
             }
         })
@@ -560,6 +668,8 @@ function saveConfigData() {
         const operationMode = document.getElementById('operation-mode')?.value === 'true';
         const smartLifeId = document.getElementById('smartlife-id')?.value || '';
         const smartLifeKey = document.getElementById('smartlife-key')?.value || '';
+        const smartLifeIp = document.getElementById('smartlife-ip')?.value || '';
+        const smartLifePort = parseInt(document.getElementById('smartlife-port')?.value || '80');
         const enableNotifications = document.getElementById('enable-notifications')?.checked || false;
         
         const config = {
@@ -571,6 +681,8 @@ function saveConfigData() {
             operation_mode: operationMode,
             smartlife_id: smartLifeId,
             smartlife_key: smartLifeKey,
+            smartlife_ip: smartLifeIp,
+            smartlife_port: smartLifePort,
             enable_notifications: enableNotifications
         };
         
@@ -669,15 +781,45 @@ function updateSolenoidUI() {
     }
 }
 
-// Função para calibrar o sensor
-function calibrateSensor() {
+// Função para calibrar zero point (400ppm)
+function calibrateZeroPoint() {
     fetch('/api/calibrate', {
         method: 'POST'
     })
     .then(response => response.json())
     .then(data => {
         if (data.status === 'success') {
-            showToast('Calibração iniciada! Isso pode levar alguns minutos.');
+            showToast('Calibração zero point (400ppm) iniciada! Isso pode levar alguns minutos.');
+        } else {
+            showToast('Erro: ' + data.message);
+        }
+    })
+    .catch(error => {
+        showToast('Erro de comunicação: ' + error);
+    });
+}
+
+// Função para calibrar span
+function calibrateSpanPoint(spanValue) {
+    fetch('/api/calibrate_span', {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+            span_value: spanValue
+        })
+    })
+    .then(response => response.json())
+    .then(data => {
+        if (data.status === 'success') {
+            showToast('Calibração span iniciada com o valor ' + spanValue + ' ppm! Isso pode levar alguns minutos.');
+            co2SpanValue = spanValue;
+            
+            // Atualize o valor na interface
+            document.querySelectorAll('#current-span').forEach(el => {
+                el.textContent = spanValue;
+            });
         } else {
             showToast('Erro: ' + data.message);
         }
