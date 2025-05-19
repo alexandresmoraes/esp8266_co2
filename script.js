@@ -31,6 +31,9 @@ document.addEventListener('DOMContentLoaded', function() {
     
     // Inicializa os gráficos
     initCharts();
+
+    // Inicializa o gauge de CO2
+    initCO2Gauge();
     
     // Adiciona eventos aos controles
     setupEventListeners();
@@ -178,6 +181,128 @@ function initCharts() {
     } catch (error) {
         console.error("Erro ao inicializar gráficos:", error);
     }
+}
+
+// Função para inicializar o gauge semicircular de CO2
+function initCO2Gauge() {
+    // Criamos um elemento canvas para desenhar o gauge
+    const gaugeContainer = document.getElementById('co2-gauge-chart');
+    gaugeContainer.innerHTML = ''; // Limpa o conteúdo existente
+    
+    // Cria um elemento canvas
+    const canvas = document.createElement('canvas');
+    canvas.width = gaugeContainer.clientWidth;
+    canvas.height = gaugeContainer.clientHeight;
+    gaugeContainer.appendChild(canvas);
+    
+    // Obtém o contexto 2D para desenhar
+    const ctx = canvas.getContext('2d');
+    
+    // Função para desenhar o gauge
+    window.updateCO2Gauge = function(value) {
+        // Limpar o canvas
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+        
+        // Definir constantes para o desenho
+        const centerX = canvas.width / 2;
+        const centerY = canvas.height;
+        const radius = Math.min(centerX, centerY) * 0.9;
+        
+        // Desenhar o arco base (fundo cinza)
+        ctx.beginPath();
+        ctx.arc(centerX, centerY, radius, Math.PI, 0, false);
+        ctx.lineWidth = radius * 0.2;
+        ctx.strokeStyle = '#eeeeee';
+        ctx.stroke();
+        
+        // Calcular o ângulo baseado no valor de CO2 (0-2000 ppm)
+        const maxValue = 2000;
+        const normalizedValue = Math.min(value, maxValue) / maxValue;
+        const angle = Math.PI - normalizedValue * Math.PI;
+        
+        // Determinar a cor com base no valor
+        let color;
+        if (value < minCO2) {
+            color = '#3498db'; // Azul para baixo
+        } else if (value > maxCO2) {
+            color = '#e74c3c'; // Vermelho para alto
+        } else {
+            color = '#2ecc71'; // Verde para normal
+        }
+        
+        // Desenhar o arco do valor
+        ctx.beginPath();
+        ctx.arc(centerX, centerY, radius, Math.PI, angle, false);
+        ctx.lineWidth = radius * 0.2;
+        ctx.strokeStyle = color;
+        ctx.stroke();
+        
+        // Adicionar marcações
+        for (let i = 0; i <= 4; i++) {
+            const markAngle = Math.PI - (i / 4) * Math.PI;
+            const startRadius = radius * 0.8;
+            const endRadius = radius * 1.0;
+            
+            ctx.beginPath();
+            ctx.moveTo(
+                centerX + Math.cos(markAngle) * startRadius,
+                centerY - Math.sin(markAngle) * startRadius
+            );
+            ctx.lineTo(
+                centerX + Math.cos(markAngle) * endRadius,
+                centerY - Math.sin(markAngle) * endRadius
+            );
+            ctx.lineWidth = 2;
+            ctx.strokeStyle = '#777';
+            ctx.stroke();
+            
+            // Adicionar labels
+            const labelRadius = radius * 1.15;
+            const value = i * 500; // 0, 500, 1000, 1500, 2000
+            
+            ctx.font = 'bold 10px Arial';
+            ctx.fillStyle = '#777';
+            ctx.textAlign = 'center';
+            ctx.textBaseline = 'middle';
+            ctx.fillText(
+                value,
+                centerX + Math.cos(markAngle) * labelRadius,
+                centerY - Math.sin(markAngle) * labelRadius
+            );
+        }
+        
+        // Desenhar o ponteiro
+        const needleLength = radius * 0.8;
+        const needleWidth = radius * 0.05;
+        
+        ctx.beginPath();
+        ctx.moveTo(centerX, centerY);
+        ctx.lineTo(
+            centerX + Math.cos(angle) * needleLength,
+            centerY - Math.sin(angle) * needleLength
+        );
+        ctx.lineWidth = needleWidth;
+        ctx.strokeStyle = '#333';
+        ctx.stroke();
+        
+        // Desenhar o círculo no centro
+        ctx.beginPath();
+        ctx.arc(centerX, centerY, needleWidth * 2, 0, Math.PI * 2);
+        ctx.fillStyle = '#333';
+        ctx.fill();
+    };
+    
+    // Inicializar com valor zero
+    window.updateCO2Gauge(0);
+    
+    // Adicionar evento de redimensionamento
+    window.addEventListener('resize', function() {
+        canvas.width = gaugeContainer.clientWidth;
+        canvas.height = gaugeContainer.clientHeight;
+        if (co2Value) {
+            window.updateCO2Gauge(co2Value);
+        }
+    });
 }
 
 // Configuração dos event listeners
@@ -406,10 +531,8 @@ function updateUI(data) {
         });
         
         // Atualiza gauge de CO2
-        const co2Gauge = document.getElementById('co2-gauge');
-        if (co2Gauge) {
-            const gaugeHeight = Math.min(100, (co2Value / 2000) * 100);
-            co2Gauge.style.height = `${gaugeHeight}%`;
+        if (window.updateCO2Gauge) {
+            window.updateCO2Gauge(co2Value);
         }
         
         // Atualiza status do CO2
@@ -425,7 +548,7 @@ function updateUI(data) {
                 co2Status.textContent = 'IDEAL';
                 co2Status.style.color = '#2ecc71';
             }
-        }
+        }        
         
         // Atualiza indicador de temperatura
         const tempIndicator = document.getElementById('temp-indicator');

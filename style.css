@@ -229,6 +229,18 @@ header p {
     margin: 0 auto;
 }
 
+#co2-gauge-chart {
+    width: 100%;
+    height: 150px;
+    margin: 15px auto 0;
+}
+
+#co2-gauge-chart canvas {
+    display: block;
+    width: 100%;
+    height: 100%;
+}
+
 .gauge {
     position: relative;
     height: 100%;

@@ -26,26 +26,17 @@
         
         <div id="dashboard" class="tab-content active">
             <div class="dashboard-grid">
-                <div class="card">
-                    <div class="card-title">
-                        Nível de CO2
-                        <span id="co2-status" class="status-text"></span>
-                    </div>
-                    <div class="card-value" id="co2-value">--</div>
-                    <div class="card-unit">ppm</div>
-                    <div class="gauge-container">
-                        <div class="gauge">
-                            <div class="gauge-value" id="co2-gauge" style="height: 0%"></div>
-                            <div class="gauge-labels">
-                                <div class="gauge-label">2000+</div>
-                                <div class="gauge-label">1500</div>
-                                <div class="gauge-label">1000</div>
-                                <div class="gauge-label">500</div>
-                                <div class="gauge-label">0</div>
-                            </div>
-                        </div>
-                    </div>
+            <div class="card">
+                <div class="card-title">
+                    Nível de CO2
+                    <span id="co2-status" class="status-text"></span>
                 </div>
+                <div class="card-value" id="co2-value">--</div>
+                <div class="card-unit">ppm</div>
+                <div class="gauge-container">
+                    <div id="co2-gauge-chart" style="width:100%; height:150px;"></div>
+                </div>
+            </div>
                 
                 <div class="card">
                     <div class="card-title">Temperatura</div>
