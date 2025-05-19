@@ -1,0 +1,186 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Sistema de Controle de CO2</title>
+    <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>Sistema de Controle de CO2</h1>
+            <p>Monitoramento e controle para otimização da fotossíntese</p>
+            <div class="wifi-status">
+                <div class="wifi-icon">📶</div>
+                <span id="wifi-name">Carregando...</span>
+            </div>
+        </header>
+        
+        <div class="tabs">
+            <button class="tab-btn active" data-tab="dashboard">Dashboard</button>
+            <button class="tab-btn" data-tab="history">Histórico</button>
+            <button class="tab-btn" data-tab="config">Configurações</button>
+        </div>
+        
+        <div id="dashboard" class="tab-content active">
+            <div class="dashboard-grid">
+                <div class="card">
+                    <div class="card-title">
+                        Nível de CO2
+                        <span id="co2-status" class="status-text"></span>
+                    </div>
+                    <div class="card-value" id="co2-value">--</div>
+                    <div class="card-unit">ppm</div>
+                    <div class="gauge-container">
+                        <div class="gauge">
+                            <div class="gauge-value" id="co2-gauge" style="height: 0%"></div>
+                            <div class="gauge-labels">
+                                <div class="gauge-label">2000+</div>
+                                <div class="gauge-label">1500</div>
+                                <div class="gauge-label">1000</div>
+                                <div class="gauge-label">500</div>
+                                <div class="gauge-label">0</div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                
+                <div class="card">
+                    <div class="card-title">Temperatura</div>
+                    <div class="card-value" id="temp-value">--.-</div>
+                    <div class="card-unit">°C</div>
+                    <div class="status-indicator">
+                        <div class="indicator" id="temp-indicator"></div>
+                        <div class="status-text" id="temp-status">--</div>
+                    </div>
+                </div>
+                
+                <div class="card">
+                    <div class="card-title">Status do Solenóide</div>
+                    <div class="card-value">
+                        <div class="status-indicator" id="solenoid-status">
+                            <div class="indicator"></div>
+                            <div class="status-text">--</div>
+                        </div>
+                    </div>
+                    <div class="card-unit" id="solenoid-desc">--</div>
+                    <button class="btn" id="toggle-solenoid">Controle Manual</button>
+                </div>
+            </div>
+            
+            <div class="card">
+                <div class="card-title">Leituras Recentes</div>
+                <div class="chart-container">
+                    <!-- Alterado de canvas para div -->
+                    <div id="readings-chart" style="width:100%; height:300px;"></div>
+                </div>
+            </div>
+        </div>
+        
+        <div id="history" class="tab-content">
+            <div class="card">
+                <div class="card-title">Histórico de CO2 (24h)</div>
+                <div class="chart-container">
+                    <!-- Alterado de canvas para div -->
+                    <div id="co2-history-chart" style="width:100%; height:300px;"></div>
+                </div>
+            </div>
+            
+            <div class="card">
+                <div class="card-title">Ativações do Solenóide</div>
+                <div class="chart-container">
+                    <!-- Alterado de canvas para div -->
+                    <div id="solenoid-history-chart" style="width:100%; height:300px;"></div>
+                </div>
+            </div>
+        </div>
+        
+        <div id="config" class="tab-content">
+            <div class="config-form">
+                <h2>Configurações do Sistema</h2>
+                
+                <div class="form-group">
+                    <label>Nome da Rede Wi-Fi</label>
+                    <input type="text" id="wifi-ssid" placeholder="Digite o nome da sua rede Wi-Fi">
+                </div>
+                
+                <div class="form-group">
+                    <label>Senha da Rede Wi-Fi</label>
+                    <input type="password" id="wifi-password" placeholder="Digite a senha da sua rede Wi-Fi">
+                </div>
+                
+                <div class="form-group">
+                    <label>Nível Mínimo de CO2 (ppm)</label>
+                    <input type="number" id="min-co2" value="800" min="400" max="2000">
+                    <input type="range" class="range-slider" id="min-co2-slider" min="400" max="2000" value="800">
+                </div>
+                
+                <div class="form-group">
+                    <label>Nível Máximo de CO2 (ppm)</label>
+                    <input type="number" id="max-co2" value="1500" min="500" max="2500">
+                    <input type="range" class="range-slider" id="max-co2-slider" min="500" max="2500" value="1500">
+                </div>
+                
+                <div class="form-group">
+                    <label>Intervalo de Leitura (segundos)</label>
+                    <input type="number" id="reading-interval" value="30" min="5" max="300">
+                </div>
+                
+                <div class="form-group">
+                    <label>Modo de Operação</label>
+                    <select id="operation-mode">
+                        <option value="true">Automático</option>
+                        <option value="false">Manual</option>
+                    </select>
+                </div>
+                
+                <h3 style="margin-top: 30px; margin-bottom: 15px; border-bottom: 1px solid #eee; padding-bottom: 10px;">Integração Smart Life</h3>
+                
+                <div class="form-group">
+                    <label>Hub Zigbee/Bluetooth</label>
+                    <select id="smart-integration">
+                        <option value="none">Desativado</option>
+                        <option value="smartlife">Smart Life Hub Zigbee 3.0/BLE</option>
+                    </select>
+                </div>
+                
+                <div class="form-group">
+                    <label>ID do Dispositivo Smart Life</label>
+                    <input type="text" id="smartlife-id" placeholder="ID do dispositivo no Smart Life">
+                </div>
+                
+                <div class="form-group">
+                    <label>Chave de API Smart Life</label>
+                    <input type="password" id="smartlife-key" placeholder="Chave de API (se necessário)">
+                </div>
+                
+                <div class="form-group">
+                    <label>Modo de Emparelhamento Bluetooth</label>
+                    <select id="bluetooth-pairing">
+                        <option value="auto">Automático</option>
+                        <option value="pin">Usando PIN</option>
+                    </select>
+                </div>
+                
+                <div class="form-group" id="pin-group" style="display: none;">
+                    <label>PIN de Emparelhamento</label>
+                    <input type="text" id="pairing-pin" placeholder="PIN para emparelhamento Bluetooth">
+                </div>
+                
+                <div class="form-group">
+                    <input type="checkbox" id="enable-notifications" style="width: auto; margin-right: 10px;">
+                    <label for="enable-notifications" style="display: inline;">Enviar Notificações para o Smart Life</label>
+                </div>
+                
+                <button class="btn" id="save-config">Salvar Configurações</button>
+                <button class="btn" id="pair-device" style="background-color: #3498db;">Emparelhar com Hub</button>
+                <button class="btn btn-danger" id="calibrate-sensor">Calibrar Sensor</button>
+            </div>
+        </div>
+    </div>
+    
+    <script src="/chart.js"></script>
+    <script src="/script.js" defer></script>
+</body>
+</html>
